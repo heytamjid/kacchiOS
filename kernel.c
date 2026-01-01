@@ -4,11 +4,13 @@
 #include "string.h"
 #include "memory.h"
 #include "process.h"
+#include "scheduler.h"
 
 #define MAX_INPUT 128
 
 void test_memory_manager(void);
 void test_process_manager(void);
+void test_scheduler(void);
 void dummy_process_1(void);
 void dummy_process_2(void);
 void dummy_process_3(void);
@@ -25,6 +27,9 @@ void kmain(void) {
     
     /* Initialize process manager */
     process_init();
+    
+    /* Initialize scheduler */
+    scheduler_init(SCHED_POLICY_PRIORITY, 100);
     
     /* Print welcome message */
     serial_puts("\n");
@@ -73,8 +78,10 @@ void kmain(void) {
                 serial_puts("  proctest  - Run process manager tests\n");
                 serial_puts("  create    - Create a test process\n");
                 serial_puts("  kill <n>  - Terminate process with PID n\n");
-                serial_puts("  info <n>  - Show process info for PID n\n");
-                serial_puts("  clear     - Clear the screen\n");
+                serial_puts("  info <n>  - Show process info for PID n\n");                serial_puts("  schedtest - Run scheduler tests\n");
+                serial_puts("  schedstats- Show scheduler statistics\n");
+                serial_puts("  schedconf - Show scheduler configuration\n");
+                serial_puts("  sched     - Start the scheduler\n");                serial_puts("  clear     - Clear the screen\n");
             }
             else if (strcmp(input, "memstats") == 0) {
                 memory_print_stats();
@@ -87,6 +94,18 @@ void kmain(void) {
             }
             else if (strcmp(input, "proctest") == 0) {
                 test_process_manager();
+            }
+            else if (strcmp(input, "schedtest") == 0) {
+                test_scheduler();
+            }
+            else if (strcmp(input, "schedstats") == 0) {
+                scheduler_print_stats();
+            }
+            else if (strcmp(input, "schedconf") == 0) {
+                scheduler_print_config();
+            }
+            else if (strcmp(input, "sched") == 0) {
+                scheduler_start();
             }
             else if (strcmp(input, "create") == 0) {
                 static uint32_t test_proc_count = 0;
@@ -295,4 +314,124 @@ void test_process_manager(void) {
     
     /* Final state */
     process_print_table();
+}
+
+/* Test the scheduler */
+void test_scheduler(void) {
+    serial_puts("\n=== Scheduler Test ===\n");
+    
+    /* Test 1: Create test processes */
+    serial_puts("Test 1: Creating test processes...\n");
+    process_t *p1 = process_create("HighPri", dummy_process_1, PROC_PRIORITY_HIGH);
+    process_t *p2 = process_create("Normal", dummy_process_2, PROC_PRIORITY_NORMAL);
+    process_t *p3 = process_create("LowPri", dummy_process_3, PROC_PRIORITY_LOW);
+    
+    if (p1 && p2 && p3) {
+        serial_puts("  Created 3 processes with different priorities\n");
+    }
+    
+    /* Test 2: Show initial configuration */
+    serial_puts("\nTest 2: Initial scheduler configuration:\n");
+    scheduler_print_config();
+    
+    /* Test 3: Test scheduling selection */
+    serial_puts("Test 3: Testing process selection...\n");
+    process_t *selected = scheduler_select_next_process();
+    if (selected) {
+        serial_puts("  Selected: ");
+        serial_puts(selected->name);
+        serial_puts(" (PID ");
+        serial_put_dec(selected->pid);
+        serial_puts(", Priority ");
+        serial_put_dec(selected->priority);
+        serial_puts(")\n");
+        process_enqueue_ready(selected);  /* Put it back */
+    }
+    
+    /* Test 4: Simulate scheduler ticks */
+    serial_puts("\nTest 4: Simulating 10 scheduler ticks...\n");
+    for (int i = 0; i < 10; i++) {
+        scheduler_tick();
+    }
+    
+    /* Test 5: Context switch simulation */
+    serial_puts("\nTest 5: Context switch simulation...\n");
+    process_t *from = process_dequeue_ready();
+    process_t *to = process_dequeue_ready();
+    
+    if (from && to) {
+        serial_puts("  Switching from ");
+        serial_puts(from->name);
+        serial_puts(" to ");
+        serial_puts(to->name);
+        serial_puts("\n");
+        
+        scheduler_switch_context(from, to);
+        serial_puts("  Context switch completed\n");
+    }
+    
+    /* Test 6: Test aging */
+    serial_puts("\nTest 6: Testing aging mechanism...\n");
+    if (p3) {
+        serial_puts("  Process ");
+        serial_puts(p3->name);
+        serial_puts(" age before: ");
+        serial_put_dec(p3->age);
+        serial_puts("\n");
+        
+        /* Artificially age the process */
+        p3->age = 95;
+        serial_puts("  Artificially set age to 95\n");
+        
+        scheduler_check_aging();
+        
+        serial_puts("  Process age after: ");
+        serial_put_dec(p3->age);
+        serial_puts(", Priority: ");
+        serial_put_dec(p3->priority);
+        serial_puts("\n");
+    }
+    
+    /* Test 7: Policy changes */
+    serial_puts("\nTest 7: Testing policy changes...\n");
+    serial_puts("  Changing to Round-Robin...\n");
+    scheduler_set_policy(SCHED_POLICY_ROUND_ROBIN);
+    
+    serial_puts("  Changing to FCFS...\n");
+    scheduler_set_policy(SCHED_POLICY_FCFS);
+    
+    serial_puts("  Changing back to Priority...\n");
+    scheduler_set_policy(SCHED_POLICY_PRIORITY);
+    
+    /* Test 8: Quantum configuration */
+    serial_puts("\nTest 8: Testing quantum configuration...\n");
+    serial_puts("  Setting default quantum to 50 ticks\n");
+    scheduler_set_quantum(50);
+    
+    if (p1) {
+        serial_puts("  Setting process quantum for ");
+        serial_puts(p1->name);
+        serial_puts(" to 200 ticks\n");
+        scheduler_set_process_quantum(p1->pid, 200);
+    }
+    
+    /* Test 9: Preemption control */
+    serial_puts("\nTest 9: Testing preemption control...\n");
+    serial_puts("  Disabling preemption\n");
+    scheduler_enable_preemption(0);
+    
+    serial_puts("  Enabling preemption\n");
+    scheduler_enable_preemption(1);
+    
+    /* Test 10: Statistics */
+    serial_puts("\nTest 10: Scheduler statistics:\n");
+    scheduler_print_stats();
+    
+    /* Clean up */
+    serial_puts("\nCleaning up test processes...\n");
+    if (p1) process_terminate(p1->pid);
+    if (p2) process_terminate(p2->pid);
+    if (p3) process_terminate(p3->pid);
+    
+    serial_puts("=== Scheduler Test Complete ===\n\n");
 }
