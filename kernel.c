@@ -3,10 +3,15 @@
 #include "serial.h"
 #include "string.h"
 #include "memory.h"
+#include "process.h"
 
 #define MAX_INPUT 128
 
 void test_memory_manager(void);
+void test_process_manager(void);
+void dummy_process_1(void);
+void dummy_process_2(void);
+void dummy_process_3(void);
 
 void kmain(void) {
     char input[MAX_INPUT];
@@ -17,6 +22,9 @@ void kmain(void) {
     
     /* Initialize memory manager */
     memory_init();
+    
+    /* Initialize process manager */
+    process_init();
     
     /* Print welcome message */
     serial_puts("\n");
@@ -61,6 +69,11 @@ void kmain(void) {
                 serial_puts("  help      - Show this help message\n");
                 serial_puts("  memstats  - Display memory statistics\n");
                 serial_puts("  memtest   - Run memory allocation tests\n");
+                serial_puts("  ps        - Show process table\n");
+                serial_puts("  proctest  - Run process manager tests\n");
+                serial_puts("  create    - Create a test process\n");
+                serial_puts("  kill <n>  - Terminate process with PID n\n");
+                serial_puts("  info <n>  - Show process info for PID n\n");
                 serial_puts("  clear     - Clear the screen\n");
             }
             else if (strcmp(input, "memstats") == 0) {
@@ -68,6 +81,39 @@ void kmain(void) {
             }
             else if (strcmp(input, "memtest") == 0) {
                 test_memory_manager();
+            }
+            else if (strcmp(input, "ps") == 0) {
+                process_print_table();
+            }
+            else if (strcmp(input, "proctest") == 0) {
+                test_process_manager();
+            }
+            else if (strcmp(input, "create") == 0) {
+                static uint32_t test_proc_count = 0;
+                char name[32];
+                name[0] = 'T'; name[1] = 'e'; name[2] = 's'; name[3] = 't';
+                name[4] = '0' + (test_proc_count % 10);
+                name[5] = '\0';
+                process_create(name, dummy_process_1, PROC_PRIORITY_NORMAL);
+                test_proc_count++;
+            }
+            else if (strlen(input) > 5 && input[0] == 'k' && input[1] == 'i' && 
+                     input[2] == 'l' && input[3] == 'l' && input[4] == ' ') {
+                /* Simple atoi for PID */
+                uint32_t pid = 0;
+                for (int i = 5; input[i] >= '0' && input[i] <= '9'; i++) {
+                    pid = pid * 10 + (input[i] - '0');
+                }
+                process_terminate(pid);
+            }
+            else if (strlen(input) > 5 && input[0] == 'i' && input[1] == 'n' && 
+                     input[2] == 'f' && input[3] == 'o' && input[4] == ' ') {
+                /* Simple atoi for PID */
+                uint32_t pid = 0;
+                for (int i = 5; input[i] >= '0' && input[i] <= '9'; i++) {
+                    pid = pid * 10 + (input[i] - '0');
+                }
+                process_print_info(pid);
             }
             else if (strcmp(input, "clear") == 0) {
                 serial_puts("\033[2J\033[H");  /* ANSI escape codes to clear screen */
@@ -157,4 +203,96 @@ void test_memory_manager(void) {
     
     serial_puts("=== Test Complete ===\n\n");
     memory_print_stats();
+}
+/* Dummy process functions for testing */
+void dummy_process_1(void) {
+    serial_puts("[Process 1] Running...\n");
+    /* In a real OS, this would execute process code */
+}
+
+void dummy_process_2(void) {
+    serial_puts("[Process 2] Running...\n");
+}
+
+void dummy_process_3(void) {
+    serial_puts("[Process 3] Running...\n");
+}
+
+/* Test the process manager */
+void test_process_manager(void) {
+    serial_puts("\n=== Process Manager Test ===\n");
+    
+    /* Test 1: Create processes */
+    serial_puts("Test 1: Creating processes...\n");
+    process_t *p1 = process_create("Worker1", dummy_process_1, PROC_PRIORITY_NORMAL);
+    process_t *p2 = process_create("Worker2", dummy_process_2, PROC_PRIORITY_HIGH);
+    process_t *p3 = process_create("Worker3", dummy_process_3, PROC_PRIORITY_LOW);
+    
+    if (p1 && p2 && p3) {
+        serial_puts("  Created 3 processes\n");
+    }
+    
+    /* Test 2: Process table */
+    serial_puts("\nTest 2: Process table:\n");
+    process_print_table();
+    
+    /* Test 3: State transitions */
+    serial_puts("Test 3: State transitions...\n");
+    serial_puts("  Setting Worker1 to BLOCKED\n");
+    process_block(p1->pid);
+    
+    serial_puts("  Setting Worker2 to CURRENT\n");
+    process_set_state(p2->pid, PROC_STATE_CURRENT);
+    
+    process_print_table();
+    
+    /* Test 4: Priority changes */
+    serial_puts("Test 4: Priority management...\n");
+    serial_puts("  Boosting Worker3 priority\n");
+    process_boost_priority(p3->pid);
+    process_print_info(p3->pid);
+    
+    /* Test 5: IPC - Message passing */
+    serial_puts("Test 5: Inter-Process Communication...\n");
+    serial_puts("  Sending message from Worker1 to Worker2\n");
+    process_send_message(p2->pid, 0xDEADBEEF);
+    
+    serial_puts("  Worker2 has ");
+    serial_put_dec(process_has_message(p2->pid));
+    serial_puts(" message(s)\n");
+    
+    /* Test 6: Process info */
+    serial_puts("\nTest 6: Detailed process info:\n");
+    process_print_info(p1->pid);
+    
+    /* Test 7: Statistics */
+    serial_puts("Test 7: Process statistics:\n");
+    process_stats_t stats;
+    process_get_stats(&stats);
+    serial_puts("  Total processes created: ");
+    serial_put_dec(stats.total_processes);
+    serial_puts("\n  Active processes: ");
+    serial_put_dec(stats.active_processes);
+    serial_puts("\n  Ready processes: ");
+    serial_put_dec(stats.ready_processes);
+    serial_puts("\n  Blocked processes: ");
+    serial_put_dec(stats.blocked_processes);
+    serial_puts("\n");
+    
+    /* Test 8: Termination */
+    serial_puts("\nTest 8: Process termination...\n");
+    serial_puts("  Terminating Worker1\n");
+    process_terminate(p1->pid);
+    
+    process_print_table();
+    
+    /* Clean up remaining processes */
+    serial_puts("\nCleaning up remaining processes...\n");
+    process_terminate(p2->pid);
+    process_terminate(p3->pid);
+    
+    serial_puts("=== Test Complete ===\n\n");
+    
+    /* Final state */
+    process_print_table();
 }
