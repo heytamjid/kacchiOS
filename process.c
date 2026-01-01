@@ -75,6 +75,11 @@ static void process_init_pcb(process_t *proc, const char *name, process_priority
     proc->wait_time = 0;
     proc->creation_time = system_ticks;
     
+    /* Scheduler simulation fields */
+    proc->required_time = 0;
+    proc->remaining_time = 0;
+    proc->remaining_slice = 0;
+    
     /* IPC */
     memset(proc->message_queue, 0, sizeof(proc->message_queue));
     proc->msg_count = 0;
@@ -708,3 +713,416 @@ const char *process_priority_to_string(process_priority_t priority) {
         default:                     return "UNKNOWN";
     }
 }
+
+/* ============================================================
+ * CPU SCHEDULER SIMULATION
+ * ============================================================ */
+
+/* Scheduler state */
+static uint32_t scheduler_enabled = 0;
+static uint32_t last_context_switch_tick = 0;
+
+/*
+ * Initialize the scheduler
+ */
+void scheduler_init(void) {
+    scheduler_enabled = 1;
+    last_context_switch_tick = 0;
+    
+    serial_puts("[SCHEDULER] Priority-based preemptive scheduler initialized\n");
+    serial_puts("[SCHEDULER] Time quantums: CRITICAL=");
+    serial_put_dec(QUANTUM_CRITICAL);
+    serial_puts(", HIGH=");
+    serial_put_dec(QUANTUM_HIGH);
+    serial_puts(", NORMAL=");
+    serial_put_dec(QUANTUM_NORMAL);
+    serial_puts(", LOW=");
+    serial_put_dec(QUANTUM_LOW);
+    serial_puts("\n");
+    serial_puts("[SCHEDULER] Aging threshold: ");
+    serial_put_dec(AGING_THRESHOLD);
+    serial_puts(" ticks\n");
+}
+
+/*
+ * Get time quantum for a priority level
+ */
+static uint32_t get_time_quantum(process_priority_t priority) {
+    switch (priority) {
+        case PROC_PRIORITY_CRITICAL: return QUANTUM_CRITICAL;
+        case PROC_PRIORITY_HIGH:     return QUANTUM_HIGH;
+        case PROC_PRIORITY_NORMAL:   return QUANTUM_NORMAL;
+        case PROC_PRIORITY_LOW:      return QUANTUM_LOW;
+        default:                     return QUANTUM_NORMAL;
+    }
+}
+
+/*
+ * Create a process with execution time requirement
+ */
+process_t *process_create_with_time(const char *name, process_priority_t priority, uint32_t required_time) {
+    /* Allocate PCB */
+    process_t *proc = (process_t *)kmalloc(sizeof(process_t));
+    if (proc == NULL) {
+        serial_puts("[PROCESS] Failed to allocate PCB\n");
+        return NULL;
+    }
+    
+    /* Initialize PCB */
+    process_init_pcb(proc, name, priority);
+    
+    /* Allocate stack */
+    proc->stack_top = stack_alloc(proc->pid);
+    if (proc->stack_top == NULL) {
+        serial_puts("[PROCESS] Failed to allocate stack\n");
+        kfree(proc);
+        return NULL;
+    }
+    
+    proc->stack_base = stack_get_base(proc->pid);
+    proc->stack_size = STACK_SIZE;
+    
+    /* Set up scheduler-specific fields */
+    proc->required_time = required_time;
+    proc->remaining_time = required_time;
+    proc->time_quantum = get_time_quantum(priority);
+    proc->remaining_slice = proc->time_quantum;
+    
+    /* Set up initial context */
+    proc->context.eip = 0;
+    proc->context.esp = (uint32_t)proc->stack_top;
+    proc->context.ebp = (uint32_t)proc->stack_top;
+    proc->context.eflags = 0x202;
+    
+    /* Add to process table */
+    process_add_to_table(proc);
+    
+    /* Add to ready queue */
+    process_add_to_ready_queue(proc);
+    
+    total_processes_created++;
+    
+    serial_puts("[SCHEDULER] Created process '");
+    serial_puts(proc->name);
+    serial_puts("' (PID ");
+    serial_put_dec(proc->pid);
+    serial_puts(", Priority: ");
+    serial_puts(process_priority_to_string(proc->priority));
+    serial_puts(", Required Time: ");
+    serial_put_dec(required_time);
+    serial_puts(")\n");
+    
+    /* Trigger scheduling decision */
+    if (scheduler_enabled) {
+        scheduler_schedule();
+    }
+    
+    return proc;
+}
+
+/*
+ * Context switch to a new process
+ */
+void scheduler_context_switch(process_t *new_process) {
+    process_t *old_process = current_process;
+    
+    /* Log context switch */
+    serial_puts("[SCHEDULER] Context switch @ tick ");
+    serial_put_dec(system_ticks);
+    serial_puts(": ");
+    
+    if (old_process != NULL) {
+        serial_puts("'");
+        serial_puts(old_process->name);
+        serial_puts("' (PID ");
+        serial_put_dec(old_process->pid);
+        serial_puts(")");
+    } else {
+        serial_puts("IDLE");
+    }
+    
+    serial_puts(" -> ");
+    
+    if (new_process != NULL) {
+        serial_puts("'");
+        serial_puts(new_process->name);
+        serial_puts("' (PID ");
+        serial_put_dec(new_process->pid);
+        serial_puts(")\n");
+    } else {
+        serial_puts("IDLE\n");
+    }
+    
+    /* Save old process state */
+    if (old_process != NULL && old_process->state == PROC_STATE_CURRENT) {
+        old_process->state = PROC_STATE_READY;
+        process_add_to_ready_queue(old_process);
+    }
+    
+    /* Restore new process state */
+    if (new_process != NULL) {
+        process_remove_from_ready_queue(new_process);
+        new_process->state = PROC_STATE_CURRENT;
+        new_process->remaining_slice = get_time_quantum(new_process->priority);
+        process_reset_age(new_process->pid);
+        current_process = new_process;
+    } else {
+        current_process = NULL;
+    }
+    
+    last_context_switch_tick = system_ticks;
+}
+
+/*
+ * Scheduler decision - select next process to run
+ */
+void scheduler_schedule(void) {
+    if (!scheduler_enabled) {
+        return;
+    }
+    
+    /* Get highest priority ready process */
+    process_t *next_process = ready_queue_head;
+    
+    /* Check if we need to switch */
+    int should_switch = 0;
+    
+    if (current_process == NULL && next_process != NULL) {
+        /* No current process, switch to ready process */
+        should_switch = 1;
+    } else if (current_process != NULL && next_process != NULL) {
+        /* Compare priorities */
+        if (next_process->priority > current_process->priority) {
+            /* Higher priority process is ready */
+            should_switch = 1;
+        } else if (current_process->remaining_slice == 0) {
+            /* Current process exhausted its quantum */
+            should_switch = 1;
+        } else if (current_process->remaining_time == 0) {
+            /* Current process finished */
+            should_switch = 1;
+        }
+    } else if (current_process != NULL && current_process->remaining_time == 0) {
+        /* Current process finished, no ready processes */
+        should_switch = 1;
+        next_process = NULL;
+    }
+    
+    if (should_switch) {
+        scheduler_context_switch(next_process);
+    }
+}
+
+/*
+ * Age processes in ready queue (for starvation prevention)
+ */
+void scheduler_age_processes(void) {
+    process_t *proc = ready_queue_head;
+    
+    while (proc != NULL) {
+        proc->age++;
+        proc->wait_time++;
+        
+        /* Check if process should be boosted */
+        if (proc->age >= AGING_THRESHOLD && proc->priority < PROC_PRIORITY_CRITICAL) {
+            serial_puts("[SCHEDULER] Aging: Boosting '");
+            serial_puts(proc->name);
+            serial_puts("' (PID ");
+            serial_put_dec(proc->pid);
+            serial_puts(") from ");
+            serial_puts(process_priority_to_string(proc->priority));
+            
+            /* Boost priority */
+            process_t *next = proc->next;
+            process_remove_from_ready_queue(proc);
+            proc->priority++;
+            proc->age = 0;
+            process_add_to_ready_queue(proc);
+            
+            serial_puts(" to ");
+            serial_puts(process_priority_to_string(proc->priority));
+            serial_puts("\n");
+            
+            proc = next;
+        } else {
+            proc = proc->next;
+        }
+    }
+}
+
+/*
+ * Tick the scheduler - advance time by one unit
+ */
+void scheduler_tick(void) {
+    system_ticks++;
+    
+    /* Update current process */
+    if (current_process != NULL) {
+        current_process->cpu_time++;
+        
+        /* Decrement remaining execution time */
+        if (current_process->remaining_time > 0) {
+            current_process->remaining_time--;
+            
+            /* Check if process completed */
+            if (current_process->remaining_time == 0) {
+                serial_puts("[SCHEDULER] Process '");
+                serial_puts(current_process->name);
+                serial_puts("' (PID ");
+                serial_put_dec(current_process->pid);
+                serial_puts(") FINISHED at tick ");
+                serial_put_dec(system_ticks);
+                serial_puts(" (CPU time: ");
+                serial_put_dec(current_process->cpu_time);
+                serial_puts(", Wait time: ");
+                serial_put_dec(current_process->wait_time);
+                serial_puts(")\n");
+                
+                /* Mark as terminated */
+                current_process->state = PROC_STATE_TERMINATED;
+                process_t *finished = current_process;
+                current_process = NULL;
+                
+                /* Don't free immediately - keep for display */
+                /* Just schedule next process */
+                scheduler_schedule();
+                return;
+            }
+        }
+        
+        /* Decrement remaining time slice */
+        if (current_process->remaining_slice > 0) {
+            current_process->remaining_slice--;
+            
+            /* Check if quantum expired */
+            if (current_process->remaining_slice == 0) {
+                /* Time quantum exhausted, trigger reschedule */
+                scheduler_schedule();
+                return;
+            }
+        }
+    }
+    
+    /* Age processes in ready queue */
+    scheduler_age_processes();
+    
+    /* Check for preemption by higher priority process */
+    if (ready_queue_head != NULL && current_process != NULL) {
+        if (ready_queue_head->priority > current_process->priority) {
+            scheduler_schedule();
+        }
+    } else if (ready_queue_head != NULL && current_process == NULL) {
+        /* No running process but ready processes exist */
+        scheduler_schedule();
+    }
+}
+
+/*
+ * Get current system ticks
+ */
+uint32_t scheduler_get_ticks(void) {
+    return system_ticks;
+}
+
+/*
+ * Print scheduler state and process table
+ */
+void scheduler_print_table(void) {
+    serial_puts("\n");
+    serial_puts("========================================\n");
+    serial_puts("    CPU SCHEDULER STATUS\n");
+    serial_puts("========================================\n");
+    serial_puts("System Ticks:     ");
+    serial_put_dec(system_ticks);
+    serial_puts("\n");
+    serial_puts("Scheduler:        ");
+    serial_puts(scheduler_enabled ? "ENABLED" : "DISABLED");
+    serial_puts("\n");
+    serial_puts("Current Process:  ");
+    if (current_process != NULL) {
+        serial_puts("'");
+        serial_puts(current_process->name);
+        serial_puts("' (PID ");
+        serial_put_dec(current_process->pid);
+        serial_puts(")\n");
+    } else {
+        serial_puts("IDLE\n");
+    }
+    serial_puts("========================================\n\n");
+    
+    serial_puts("=== Process Table ===\n");
+    serial_puts("PID  Name          Priority   State      Remain  Wait   Slice\n");
+    serial_puts("---  ------------  ---------  ---------  ------  -----  -----\n");
+    
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i] != NULL) {
+            process_t *p = process_table[i];
+            
+            /* PID */
+            if (p->pid < 10) serial_puts(" ");
+            serial_put_dec(p->pid);
+            serial_puts("   ");
+            
+            /* Name */
+            serial_puts(p->name);
+            for (uint32_t j = strlen(p->name); j < 14; j++) {
+                serial_puts(" ");
+            }
+            
+            /* Priority */
+            const char *prio_str = process_priority_to_string(p->priority);
+            serial_puts(prio_str);
+            for (uint32_t j = strlen(prio_str); j < 11; j++) {
+                serial_puts(" ");
+            }
+            
+            /* State */
+            const char *state_str;
+            if (p->state == PROC_STATE_CURRENT) {
+                state_str = "RUNNING";
+            } else if (p->state == PROC_STATE_READY) {
+                state_str = "READY";
+            } else if (p->state == PROC_STATE_TERMINATED) {
+                state_str = "FINISHED";
+            } else {
+                state_str = process_state_to_string(p->state);
+            }
+            serial_puts(state_str);
+            for (uint32_t j = strlen(state_str); j < 11; j++) {
+                serial_puts(" ");
+            }
+            
+            /* Remaining time */
+            if (p->remaining_time < 10) serial_puts("  ");
+            else if (p->remaining_time < 100) serial_puts(" ");
+            serial_put_dec(p->remaining_time);
+            serial_puts("    ");
+            
+            /* Wait time */
+            if (p->wait_time < 10) serial_puts("  ");
+            else if (p->wait_time < 100) serial_puts(" ");
+            serial_put_dec(p->wait_time);
+            serial_puts("   ");
+            
+            /* Remaining slice */
+            if (p->state == PROC_STATE_CURRENT) {
+                if (p->remaining_slice < 10) serial_puts("  ");
+                else if (p->remaining_slice < 100) serial_puts(" ");
+                serial_put_dec(p->remaining_slice);
+            } else {
+                serial_puts("  -");
+            }
+            
+            serial_puts("\n");
+            count++;
+        }
+    }
+    
+    serial_puts("---\n");
+    serial_puts("Total: ");
+    serial_put_dec(count);
+    serial_puts(" processes\n");
+    serial_puts("====================\n\n");
+}
+

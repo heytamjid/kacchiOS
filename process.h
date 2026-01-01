@@ -53,6 +53,11 @@ typedef struct process {
     uint32_t wait_time;             /* Time spent waiting */
     uint32_t creation_time;         /* When process was created */
     
+    /* Scheduler simulation fields */
+    uint32_t required_time;         /* Total execution time required */
+    uint32_t remaining_time;        /* Remaining execution time */
+    uint32_t remaining_slice;       /* Remaining time in current slice */
+    
     /* IPC - Message passing (Good to Have) */
     uint32_t message_queue[16];     /* Simple message queue */
     uint32_t msg_count;             /* Number of messages */
@@ -134,5 +139,24 @@ void process_enqueue_ready(process_t *proc);
 /* Helper functions for process state names */
 const char *process_state_to_string(process_state_t state);
 const char *process_priority_to_string(process_priority_t priority);
+
+/* Scheduler Functions */
+void scheduler_init(void);
+void scheduler_tick(void);
+void scheduler_schedule(void);
+process_t *process_create_with_time(const char *name, process_priority_t priority, uint32_t required_time);
+void scheduler_print_table(void);
+uint32_t scheduler_get_ticks(void);
+void scheduler_age_processes(void);
+void scheduler_context_switch(process_t *new_process);
+
+/* Time quantum configuration per priority */
+#define QUANTUM_CRITICAL 50
+#define QUANTUM_HIGH     100
+#define QUANTUM_NORMAL   150
+#define QUANTUM_LOW      200
+
+/* Aging configuration */
+#define AGING_THRESHOLD  500  /* Ticks before priority boost */
 
 #endif /* PROCESS_H */
