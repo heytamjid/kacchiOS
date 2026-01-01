@@ -134,6 +134,9 @@ void kmain(void) {
                 serial_puts("  tick [n]          - Advance scheduler by n ticks (default 1)\n");
                 serial_puts("  kill <n>          - Terminate process with PID n\n");
                 serial_puts("  info <n>          - Show process info for PID n\n");
+                serial_puts("  send <pid> <msg>  - Send message to process\n");
+                serial_puts("  recv <pid>        - Receive message from process queue\n");
+                serial_puts("  msgs <pid>        - Show message queue for process\n");
                 serial_puts("  clear             - Clear the screen\n");
             }
             else if (strcmp(input, "memstats") == 0) {
@@ -208,6 +211,112 @@ void kmain(void) {
                     pid = pid * 10 + (input[i] - '0');
                 }
                 process_print_info(pid);
+            }
+            else if (strlen(input) >= 4 && input[0] == 's' && input[1] == 'e' && 
+                     input[2] == 'n' && input[3] == 'd') {
+                /* Parse: send <pid> <message> */
+                char *tokens[10];
+                int token_count = tokenize(input, tokens, 10);
+                
+                if (token_count == 3) {
+                    uint32_t dest_pid = parse_uint(tokens[1]);
+                    uint32_t message = parse_uint(tokens[2]);
+                    
+                    int result = process_send_message(dest_pid, message);
+                    if (result == 0) {
+                        serial_puts("[IPC] Message ");
+                        serial_put_dec(message);
+                        serial_puts(" sent to PID ");
+                        serial_put_dec(dest_pid);
+                        serial_puts("\n");
+                    }
+                } else {
+                    serial_puts("Usage: send <pid> <message>\n");
+                    serial_puts("Example: send 2 12345\n");
+                }
+            }
+            else if (strlen(input) >= 4 && input[0] == 'r' && input[1] == 'e' && 
+                     input[2] == 'c' && input[3] == 'v') {
+                /* Parse: recv <pid> */
+                char *tokens[10];
+                int token_count = tokenize(input, tokens, 10);
+                
+                if (token_count == 2) {
+                    uint32_t pid = parse_uint(tokens[1]);
+                    process_t *proc = process_get_by_pid(pid);
+                    
+                    if (proc == NULL) {
+                        serial_puts("[IPC] Process not found\n");
+                    } else if (proc->msg_count == 0) {
+                        serial_puts("[IPC] No messages in queue for PID ");
+                        serial_put_dec(pid);
+                        serial_puts("\n");
+                    } else {
+                        /* Get first message */
+                        uint32_t message = proc->message_queue[0];
+                        
+                        /* Shift remaining messages */
+                        for (uint32_t i = 0; i < proc->msg_count - 1; i++) {
+                            proc->message_queue[i] = proc->message_queue[i + 1];
+                        }
+                        proc->msg_count--;
+                        
+                        serial_puts("[IPC] Received message from PID ");
+                        serial_put_dec(pid);
+                        serial_puts(": ");
+                        serial_put_dec(message);
+                        serial_puts(" (");
+                        serial_put_dec(proc->msg_count);
+                        serial_puts(" remaining)\n");
+                    }
+                } else {
+                    serial_puts("Usage: recv <pid>\n");
+                    serial_puts("Example: recv 2\n");
+                }
+            }
+            else if (strlen(input) >= 4 && input[0] == 'm' && input[1] == 's' && 
+                     input[2] == 'g' && input[3] == 's') {
+                /* Parse: msgs <pid> */
+                char *tokens[10];
+                int token_count = tokenize(input, tokens, 10);
+                
+                if (token_count == 2) {
+                    uint32_t pid = parse_uint(tokens[1]);
+                    process_t *proc = process_get_by_pid(pid);
+                    
+                    if (proc == NULL) {
+                        serial_puts("[IPC] Process not found\n");
+                    } else {
+                        serial_puts("\n=== Message Queue for PID ");
+                        serial_put_dec(pid);
+                        serial_puts(" ('");
+                        serial_puts(proc->name);
+                        serial_puts("') ===\n");
+                        serial_puts("Queue Size: ");
+                        serial_put_dec(proc->msg_count);
+                        serial_puts(" / 16\n");
+                        
+                        if (proc->msg_count > 0) {
+                            serial_puts("Messages:\n");
+                            for (uint32_t i = 0; i < proc->msg_count; i++) {
+                                serial_puts("  [");
+                                serial_put_dec(i);
+                                serial_puts("] ");
+                                serial_put_dec(proc->message_queue[i]);
+                                serial_puts("\n");
+                            }
+                        } else {
+                            serial_puts("(Queue is empty)\n");
+                        }
+                        
+                        serial_puts("Waiting for message: ");
+                        serial_puts(proc->waiting_for_msg ? "YES\n" : "NO\n");
+                        serial_puts("===================\n\n");
+                    }
+                } else {
+                    serial_puts("Usage: msgs <pid>\n");
+                    serial_puts("Example: msgs 2\n");
+                }
             }
             else if (strcmp(input, "clear") == 0) {
                 serial_puts("\033[2J\033[H");  /* ANSI escape codes to clear screen */
