@@ -31,13 +31,25 @@ void kmain(void) {
     /* Initialize scheduler */
     scheduler_init(SCHED_POLICY_PRIORITY, 100);
     
+    /* Start scheduler */
+    scheduler_start();
+    
+    /* Create some demo processes for testing */
+    serial_puts("\n[DEMO] Creating test processes...\n");
+    process_create_with_time("CriticalTask", dummy_process_1, PROC_PRIORITY_CRITICAL, 250);
+    process_create_with_time("HighPrioJob", dummy_process_2, PROC_PRIORITY_HIGH, 400);
+    process_create_with_time("NormalWork", dummy_process_3, PROC_PRIORITY_NORMAL, 300);
+    process_create_with_time("LowPrioTask", dummy_process_1, PROC_PRIORITY_LOW, 500);
+    process_create_with_time("QuickHigh", dummy_process_2, PROC_PRIORITY_HIGH, 150);
+    process_create_with_time("BackgroundJob", dummy_process_3, PROC_PRIORITY_LOW, 5000);
+    serial_puts("[DEMO] 6 test processes created. Type 'ps' to view, 'tick 100' to advance.\n\n");
+    
     /* Print welcome message */
-    serial_puts("\n");
     serial_puts("========================================\n");
     serial_puts("    kacchiOS - Minimal Baremetal OS\n");
     serial_puts("========================================\n");
     serial_puts("Hello from kacchiOS!\n");
-    serial_puts("Running null process...\n\n");
+    serial_puts("Type 'help' for commands, 'tick 100' to run scheduler\n\n");
     
     /* Main loop - the "null process" */
     while (1) {
@@ -76,12 +88,15 @@ void kmain(void) {
                 serial_puts("  memtest   - Run memory allocation tests\n");
                 serial_puts("  ps        - Show process table\n");
                 serial_puts("  proctest  - Run process manager tests\n");
-                serial_puts("  create    - Create a test process\n");
+                serial_puts("  create <name> <priority> <time> - Create a process\n");
                 serial_puts("  kill <n>  - Terminate process with PID n\n");
-                serial_puts("  info <n>  - Show process info for PID n\n");                serial_puts("  schedtest - Run scheduler tests\n");
+                serial_puts("  info <n>  - Show process info for PID n\n");
+                serial_puts("  schedtest - Run scheduler tests\n");
                 serial_puts("  schedstats- Show scheduler statistics\n");
                 serial_puts("  schedconf - Show scheduler configuration\n");
-                serial_puts("  sched     - Start the scheduler\n");                serial_puts("  clear     - Clear the screen\n");
+                serial_puts("  sched     - Start the scheduler\n");
+                serial_puts("  tick [n]  - Advance scheduler by n ticks (default 1)\n");
+                serial_puts("  clear     - Clear the screen\n");
             }
             else if (strcmp(input, "memstats") == 0) {
                 memory_print_stats();
@@ -107,14 +122,96 @@ void kmain(void) {
             else if (strcmp(input, "sched") == 0) {
                 scheduler_start();
             }
-            else if (strcmp(input, "create") == 0) {
-                static uint32_t test_proc_count = 0;
-                char name[32];
-                name[0] = 'T'; name[1] = 'e'; name[2] = 's'; name[3] = 't';
-                name[4] = '0' + (test_proc_count % 10);
-                name[5] = '\0';
-                process_create(name, dummy_process_1, PROC_PRIORITY_NORMAL);
-                test_proc_count++;
+            else if (strlen(input) >= 4 && input[0] == 't' && input[1] == 'i' && 
+                     input[2] == 'c' && input[3] == 'k') {
+                /* Parse tick count */
+                uint32_t ticks = 1;
+                if (input[4] == ' ') {
+                    int idx = 5;
+                    ticks = 0;
+                    while (input[idx] >= '0' && input[idx] <= '9') {
+                        ticks = ticks * 10 + (input[idx] - '0');
+                        idx++;
+                    }
+                    if (ticks == 0) ticks = 1;
+                }
+                
+                serial_puts("Advancing scheduler by ");
+                serial_put_dec(ticks);
+                serial_puts(" tick(s)\n");
+                
+                for (uint32_t i = 0; i < ticks; i++) {
+                    scheduler_tick();
+                }
+            }
+            else if (strlen(input) >= 6 && input[0] == 'c' && input[1] == 'r' && 
+                     input[2] == 'e' && input[3] == 'a' && input[4] == 't' && input[5] == 'e') {
+                /* Parse: create <name> <priority> <required_time> */
+                char name[32] = "Process";
+                process_priority_t priority = PROC_PRIORITY_NORMAL;
+                uint32_t required_time = 0;
+                
+                /* Skip "create " */
+                int idx = 7;
+                
+                /* Parse name */
+                int name_idx = 0;
+                while (input[idx] != '\0' && input[idx] != ' ' && name_idx < 31) {
+                    name[name_idx++] = input[idx++];
+                }
+                name[name_idx] = '\0';
+                
+                /* Skip spaces */
+                while (input[idx] == ' ') idx++;
+                
+                /* Parse priority */
+                if (input[idx] != '\0') {
+                    if (input[idx] == 'h' || input[idx] == 'H') {
+                        priority = PROC_PRIORITY_HIGH;
+                    } else if (input[idx] == 'n' || input[idx] == 'N') {
+                        priority = PROC_PRIORITY_NORMAL;
+                    } else if (input[idx] == 'l' || input[idx] == 'L') {
+                        priority = PROC_PRIORITY_LOW;
+                    } else if (input[idx] == 'c' || input[idx] == 'C') {
+                        priority = PROC_PRIORITY_CRITICAL;
+                    } else {
+                        /* Try numeric priority (0-3) */
+                        int prio = input[idx] - '0';
+                        if (prio >= 0 && prio <= 3) {
+                            priority = (process_priority_t)prio;
+                        }
+                    }
+                    
+                    /* Skip to next space */
+                    while (input[idx] != '\0' && input[idx] != ' ') idx++;
+                    while (input[idx] == ' ') idx++;
+                    
+                    /* Parse required time */
+                    if (input[idx] >= '0' && input[idx] <= '9') {
+                        required_time = 0;
+                        while (input[idx] >= '0' && input[idx] <= '9') {
+                            required_time = required_time * 10 + (input[idx] - '0');
+                            idx++;
+                        }
+                    }
+                }
+                
+                process_t *proc;
+                if (required_time > 0) {
+                    proc = process_create_with_time(name, dummy_process_1, priority, required_time);
+                } else {
+                    proc = process_create(name, dummy_process_1, priority);
+                }
+                
+                if (proc) {
+                    serial_puts("Created process '");
+                    serial_puts(name);
+                    serial_puts("' with PID ");
+                    serial_put_dec(proc->pid);
+                    serial_puts(" and priority ");
+                    serial_put_dec(priority);
+                    serial_puts("\n");
+                }
             }
             else if (strlen(input) > 5 && input[0] == 'k' && input[1] == 'i' && 
                      input[2] == 'l' && input[3] == 'l' && input[4] == ' ') {

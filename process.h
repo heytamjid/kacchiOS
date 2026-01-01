@@ -50,6 +50,7 @@ typedef struct process {
     /* Scheduling information */
     uint32_t time_quantum;          /* Time slice for scheduling */
     uint32_t cpu_time;              /* Total CPU time used */
+    uint32_t required_time;         /* Time required to complete task */
     uint32_t wait_time;             /* Time spent waiting */
     uint32_t creation_time;         /* When process was created */
     
@@ -92,6 +93,7 @@ void process_init(void);
 
 /* Process Creation and Termination */
 process_t *process_create(const char *name, process_func_t entry_point, process_priority_t priority);
+process_t *process_create_with_time(const char *name, process_func_t entry_point, process_priority_t priority, uint32_t required_time);
 void process_terminate(uint32_t pid);
 void process_exit(int exit_code);
 

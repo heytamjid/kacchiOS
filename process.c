@@ -72,6 +72,7 @@ static void process_init_pcb(process_t *proc, const char *name, process_priority
     /* Scheduling info */
     proc->time_quantum = 100;  /* Default time quantum */
     proc->cpu_time = 0;
+    proc->required_time = 0;   /* No requirement by default */
     proc->wait_time = 0;
     proc->creation_time = system_ticks;
     
@@ -134,7 +135,7 @@ static void process_add_to_ready_queue(process_t *proc) {
         return;
     }
     
-    /* Insert based on priority (higher priority first) */
+    /* Insert based on priority (higher number = higher priority) */
     process_t *current = ready_queue_head;
     
     /* Insert at head if higher priority than head */
@@ -237,6 +238,23 @@ process_t *process_create(const char *name, process_func_t entry_point, process_
 }
 
 /*
+ * Create a new process with required time
+ */
+process_t *process_create_with_time(const char *name, process_func_t entry_point, 
+                                     process_priority_t priority, uint32_t required_time) {
+    process_t *proc = process_create(name, entry_point, priority);
+    
+    if (proc != NULL) {
+        proc->required_time = required_time;
+        serial_puts("[PROCESS] Set required time: ");
+        serial_put_dec(required_time);
+        serial_puts(" ticks\n");
+    }
+    
+    return proc;
+}
+
+/*
  * Terminate a process by PID
  */
 void process_terminate(uint32_t pid) {
@@ -249,19 +267,24 @@ void process_terminate(uint32_t pid) {
         return;
     }
     
-    /* Set state to terminated */
-    proc->state = PROC_STATE_TERMINATED;
-    
-    /* Remove from ready queue if present */
-    if (proc->state == PROC_STATE_READY) {
-        process_remove_from_ready_queue(proc);
-    }
-    
     serial_puts("[PROCESS] Terminating process '");
     serial_puts(proc->name);
     serial_puts("' (PID ");
     serial_put_dec(pid);
     serial_puts(")\n");
+    
+    /* Remove from ready queue if in READY state */
+    if (proc->state == PROC_STATE_READY) {
+        process_remove_from_ready_queue(proc);
+    }
+    
+    /* Clear current process if this is it */
+    if (current_process == proc) {
+        current_process = NULL;
+    }
+    
+    /* Set state to terminated */
+    proc->state = PROC_STATE_TERMINATED;
     
     /* Free stack */
     stack_free(proc->pid);
@@ -490,8 +513,8 @@ void process_get_stats(process_stats_t *stats) {
  */
 void process_print_table(void) {
     serial_puts("\n=== Process Table ===\n");
-    serial_puts("PID  Name                State      Priority   CPU Time\n");
-    serial_puts("---  ------------------  ---------  ---------  --------\n");
+    serial_puts("PID  Name          State    Pri  CPU  Req  Progress\n");
+    serial_puts("---  ------------  -------  ---  ---  ---  --------\n");
     
     uint32_t count = 0;
     for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
@@ -503,28 +526,50 @@ void process_print_table(void) {
             serial_put_dec(p->pid);
             serial_puts("   ");
             
-            /* Name */
+            /* Name (12 chars) */
             serial_puts(p->name);
-            for (uint32_t j = strlen(p->name); j < 20; j++) {
+            for (uint32_t j = strlen(p->name); j < 14; j++) {
                 serial_puts(" ");
             }
             
-            /* State */
+            /* State (7 chars) */
             const char *state_str = process_state_to_string(p->state);
             serial_puts(state_str);
-            for (uint32_t j = strlen(state_str); j < 11; j++) {
+            for (uint32_t j = strlen(state_str); j < 9; j++) {
                 serial_puts(" ");
             }
             
             /* Priority */
-            const char *prio_str = process_priority_to_string(p->priority);
-            serial_puts(prio_str);
-            for (uint32_t j = strlen(prio_str); j < 11; j++) {
-                serial_puts(" ");
-            }
+            serial_put_dec(p->priority);
+            serial_puts("    ");
             
             /* CPU Time */
+            if (p->cpu_time < 100) serial_puts(" ");
+            if (p->cpu_time < 10) serial_puts(" ");
             serial_put_dec(p->cpu_time);
+            serial_puts("  ");
+            
+            /* Required Time */
+            if (p->required_time > 0) {
+                if (p->required_time < 100) serial_puts(" ");
+                if (p->required_time < 10) serial_puts(" ");
+                serial_put_dec(p->required_time);
+                serial_puts("  ");
+                
+                /* Progress */
+                if (p->cpu_time >= p->required_time) {
+                    serial_puts("DONE");
+                } else {
+                    uint32_t percent = (p->cpu_time * 100) / p->required_time;
+                    if (percent < 100) serial_puts(" ");
+                    if (percent < 10) serial_puts(" ");
+                    serial_put_dec(percent);
+                    serial_puts("%");
+                }
+            } else {
+                serial_puts("  -   -");
+            }
+            
             serial_puts("\n");
             
             count++;
@@ -678,6 +723,9 @@ process_t *process_dequeue_ready(void) {
  * Enqueue process to ready queue
  */
 void process_enqueue_ready(process_t *proc) {
+    if (proc == NULL) {
+        return;
+    }
     process_add_to_ready_queue(proc);
 }
 

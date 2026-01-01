@@ -90,6 +90,21 @@ void scheduler_tick(void) {
     /* Update current process CPU time */
     current->cpu_time++;
     
+    /* Check if process has completed its required time */
+    if (current->required_time > 0 && current->cpu_time >= current->required_time) {
+        serial_puts("[SCHEDULER] Process ");
+        serial_put_dec(current->pid);
+        serial_puts(" (");
+        serial_puts(current->name);
+        serial_puts(") completed after ");
+        serial_put_dec(current->cpu_time);
+        serial_puts(" ticks\n");
+        
+        process_terminate(current->pid);
+        scheduler_schedule();  /* Schedule next process */
+        return;
+    }
+    
     /* Decrease time slice */
     if (time_slice_remaining > 0) {
         time_slice_remaining--;
@@ -103,6 +118,7 @@ void scheduler_tick(void) {
         
         sched_stats.preemptions++;
         scheduler_schedule();  /* Preempt current process */
+        return;
     }
     
     /* Periodically check for aging */
@@ -121,46 +137,41 @@ void scheduler_schedule(void) {
     }
     
     process_t *current = process_get_current();
+    
+    /* If there's a current process, save it back to READY state first */
+    if (current != NULL && current->state == PROC_STATE_CURRENT) {
+        serial_puts("[SCHEDULER DEBUG] Saving current process: ");
+        serial_puts(current->name);
+        serial_puts(" -> READY\n");
+        process_set_state(current->pid, PROC_STATE_READY);
+    }
+    
+    /* Now select next process from ready queue */
     process_t *next = scheduler_select_next_process();
+    
+    serial_puts("[SCHEDULER DEBUG] Selected next=");
+    if (next) {
+        serial_puts(next->name);
+    } else {
+        serial_puts("NULL");
+    }
+    serial_puts("\n");
     
     /* No process to run */
     if (next == NULL) {
-        if (current != NULL) {
-            /* Keep current process running if no other option */
-            return;
-        }
         serial_puts("[SCHEDULER] No process to schedule\n");
         return;
     }
     
-    /* Same process, just continue */
-    if (current == next) {
-        time_slice_remaining = next->time_quantum;
-        return;
-    }
-    
-    /* Context switch needed */
-    serial_puts("[SCHEDULER] Switching: ");
-    if (current != NULL) {
-        serial_puts(current->name);
-        serial_puts(" (PID ");
-        serial_put_dec(current->pid);
-        serial_puts(")");
-    } else {
-        serial_puts("IDLE");
-    }
-    serial_puts(" -> ");
+    /* Load the next process and set it to CURRENT */
+    serial_puts("[SCHEDULER] Switching to: ");
     serial_puts(next->name);
     serial_puts(" (PID ");
     serial_put_dec(next->pid);
     serial_puts(")\n");
     
-    /* Perform context switch */
-    scheduler_switch_context(current, next);
-    
-    /* Set time slice for new process */
+    process_set_state(next->pid, PROC_STATE_CURRENT);
     time_slice_remaining = next->time_quantum;
-    
     sched_stats.total_context_switches++;
 }
 
@@ -223,23 +234,16 @@ static process_t *select_fcfs(void) {
 }
 
 /*
- * Context switch between processes
+ * Context switch (simplified - just save/restore context)
  */
 void scheduler_switch_context(process_t *from, process_t *to) {
-    /* Save current process state */
+    /* Save context of outgoing process */
     if (from != NULL) {
         save_context(from);
-        
-        /* If process is not terminated, move to ready state */
-        if (from->state != PROC_STATE_TERMINATED) {
-            process_set_state(from->pid, PROC_STATE_READY);
-            process_enqueue_ready(from);
-        }
     }
     
-    /* Load next process state */
+    /* Load context of incoming process */
     if (to != NULL) {
-        process_set_state(to->pid, PROC_STATE_CURRENT);
         restore_context(to);
     }
 }
