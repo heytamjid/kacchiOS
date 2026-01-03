@@ -34,8 +34,8 @@ void scheduler_init(sched_policy_t policy, uint32_t default_quantum) {
     sched_config.default_quantum = default_quantum;
     sched_config.min_quantum = 10;
     sched_config.max_quantum = 1000;
-    sched_config.aging_threshold = 100;
-    sched_config.aging_boost_interval = 50;
+    sched_config.aging_threshold = 100;      /* Boost after 10 ticks of waiting */
+    sched_config.aging_boost_interval = 50; /* (not used anymore, aging checked every tick) */
     sched_config.enable_aging = 1;
     sched_config.enable_preemption = 1;
     
@@ -84,6 +84,12 @@ void scheduler_tick(void) {
     current_tick++;
     sched_stats.total_ticks++;
     
+    /* Check for aging FIRST - before any early returns */
+    /* This ensures waiting processes get aged every tick */
+    if (sched_config.enable_aging) {
+        scheduler_check_aging();
+    }
+    
     process_t *current = process_get_current();
     
     if (current == NULL) {
@@ -125,12 +131,6 @@ void scheduler_tick(void) {
         sched_stats.preemptions++;
         scheduler_schedule();  /* Preempt current process */
         return;
-    }
-    
-    /* Periodically check for aging */
-    if (sched_config.enable_aging && 
-        (current_tick % sched_config.aging_boost_interval) == 0) {
-        scheduler_check_aging();
     }
 }
 
