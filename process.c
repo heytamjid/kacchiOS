@@ -210,13 +210,35 @@ process_t *process_create(const char *name, process_func_t entry_point, process_
     proc->stack_base = stack_get_base(proc->pid);
     proc->stack_size = STACK_SIZE;
     
-    /* Set up initial stack frame for process entry */
-    /* In a real OS, we'd set up the stack with entry_point address */
-    /* For now, just initialize the context */
+    /* ========== Initialize CPU context for REAL hardware context switch ========== */
+    /* Set up initial register values that will be loaded on first context switch */
+    
+    /* Instruction pointer - where process will start executing */
     proc->context.eip = (uint32_t)entry_point;
+    
+    /* Stack pointers - process's own stack */
     proc->context.esp = (uint32_t)proc->stack_top;
     proc->context.ebp = (uint32_t)proc->stack_top;
-    proc->context.eflags = 0x202;  /* Interrupts enabled */
+    
+    /* General purpose registers - initialize to distinguishable values */
+    /* Using PID-based values so each process has unique register values */
+    proc->context.eax = 0xAAAA0000 | proc->pid;  /* EAX = 0xAAAA00XX where XX is PID */
+    proc->context.ebx = 0xBBBB0000 | proc->pid;  /* EBX = 0xBBBB00XX */
+    proc->context.ecx = 0xCCCC0000 | proc->pid;  /* ECX = 0xCCCC00XX */
+    proc->context.edx = 0xDDDD0000 | proc->pid;  /* EDX = 0xDDDD00XX */
+    proc->context.esi = 0x5151E000 | proc->pid;  /* ESI = 0x5151E0XX */
+    proc->context.edi = 0xD1D10000 | proc->pid;  /* EDI = 0xD1D100XX */
+    
+    /* Flags register - interrupts enabled, reserved bit set */
+    proc->context.eflags = 0x202;  /* IF=1 (interrupts enabled), reserved bit 1 = 1 */
+    
+    /* Segment registers - use kernel segments (flat model) */
+    proc->context.cs = 0x08;   /* Kernel code segment */
+    proc->context.ds = 0x10;   /* Kernel data segment */
+    proc->context.es = 0x10;
+    proc->context.fs = 0x10;
+    proc->context.gs = 0x10;
+    proc->context.ss = 0x10;   /* Kernel stack segment */
     
     /* Add to process table */
     process_add_to_table(proc);
@@ -716,6 +738,11 @@ process_t *process_dequeue_ready(void) {
     
     process_t *proc = ready_queue_head;
     process_remove_from_ready_queue(proc);
+    
+    /* Mark as dequeued (not in READY state anymore) to prevent double-removal */
+    /* This prevents process_set_state from trying to remove again */
+    proc->state = PROC_STATE_WAITING;  /* Transitional state: dequeued but not yet CURRENT */
+    
     return proc;
 }
 

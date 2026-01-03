@@ -4,6 +4,12 @@
 #include "serial.h"
 #include "string.h"
 
+/* External assembly functions for REAL hardware context switching */
+extern void asm_save_context(cpu_context_t *ctx);
+extern void asm_restore_context(cpu_context_t *ctx);
+extern uint32_t asm_get_eflags(void);
+extern uint32_t asm_get_eip(void);
+
 /* Scheduler state */
 static sched_config_t sched_config;
 static sched_stats_t sched_stats;
@@ -129,7 +135,7 @@ void scheduler_tick(void) {
 }
 
 /*
- * Main scheduling function - makes scheduling decision
+ * Main scheduling function - makes scheduling decision with REAL context switch
  */
 void scheduler_schedule(void) {
     if (!scheduler_running) {
@@ -137,6 +143,7 @@ void scheduler_schedule(void) {
     }
     
     process_t *current = process_get_current();
+    process_t *prev = current;  /* Save reference for context switch */
     
     /* If there's a current process, save it back to READY state first */
     if (current != NULL && current->state == PROC_STATE_CURRENT) {
@@ -173,6 +180,12 @@ void scheduler_schedule(void) {
     process_set_state(next->pid, PROC_STATE_CURRENT);
     time_slice_remaining = next->time_quantum;
     sched_stats.total_context_switches++;
+    
+    /* ========== REAL HARDWARE CONTEXT SWITCH ========== */
+    /* Only perform context switch if switching to a different process */
+    if (prev != next) {
+        scheduler_switch_context(prev, next);
+    }
 }
 
 /*
@@ -234,9 +247,11 @@ static process_t *select_fcfs(void) {
 }
 
 /*
- * Context switch (simplified - just save/restore context)
+ * Context switch (REAL hardware context switch using assembly)
  */
 void scheduler_switch_context(process_t *from, process_t *to) {
+    serial_puts("[CONTEXT SWITCH] ===== REAL HARDWARE CONTEXT SWITCH =====\n");
+    
     /* Save context of outgoing process */
     if (from != NULL) {
         save_context(from);
@@ -246,58 +261,108 @@ void scheduler_switch_context(process_t *from, process_t *to) {
     if (to != NULL) {
         restore_context(to);
     }
+    
+    serial_puts("[CONTEXT SWITCH] ===== CONTEXT SWITCH COMPLETE =====\n");
 }
 
 /*
- * Save CPU context (simplified - in real OS this would save all registers)
+ * Save CPU context - REAL hardware register save using x86 assembly
  */
 static void save_context(process_t *proc) {
     if (proc == NULL) {
         return;
     }
     
-    /* In a real OS, this would save:
-     * - All general purpose registers (EAX, EBX, ECX, EDX, ESI, EDI)
-     * - Stack pointers (ESP, EBP)
-     * - Instruction pointer (EIP)
-     * - Segment registers
-     * - Flags register
-     * 
-     * For this educational OS, we just mark that context was saved
-     */
+    serial_puts("[CONTEXT SAVE] Saving REAL CPU registers for PID ");
+    serial_put_dec(proc->pid);
+    serial_puts(" (");
+    serial_puts(proc->name);
+    serial_puts(")\n");
     
-    /* Context is already in proc->context structure */
-    /* In real implementation, would do:
-     * asm volatile("mov %%eax, %0" : "=r"(proc->context.eax));
-     * ... etc for all registers
-     */
+    /* Call assembly routine to save ALL CPU registers */
+    asm_save_context(&proc->context);
+    
+    /* Log the saved register values */
+    serial_puts("  [HW] EAX=0x");
+    serial_put_hex(proc->context.eax);
+    serial_puts(" EBX=0x");
+    serial_put_hex(proc->context.ebx);
+    serial_puts(" ECX=0x");
+    serial_put_hex(proc->context.ecx);
+    serial_puts(" EDX=0x");
+    serial_put_hex(proc->context.edx);
+    serial_puts("\n");
+    
+    serial_puts("  [HW] ESI=0x");
+    serial_put_hex(proc->context.esi);
+    serial_puts(" EDI=0x");
+    serial_put_hex(proc->context.edi);
+    serial_puts(" EBP=0x");
+    serial_put_hex(proc->context.ebp);
+    serial_puts(" ESP=0x");
+    serial_put_hex(proc->context.esp);
+    serial_puts("\n");
+    
+    serial_puts("  [HW] EIP=0x");
+    serial_put_hex(proc->context.eip);
+    serial_puts(" EFLAGS=0x");
+    serial_put_hex(proc->context.eflags);
+    serial_puts("\n");
+    
+    serial_puts("  [HW] CS=0x");
+    serial_put_hex(proc->context.cs);
+    serial_puts(" DS=0x");
+    serial_put_hex(proc->context.ds);
+    serial_puts(" SS=0x");
+    serial_put_hex(proc->context.ss);
+    serial_puts("\n");
 }
 
 /*
- * Restore CPU context (simplified)
+ * Restore CPU context - REAL hardware register restore using x86 assembly
  */
 static void restore_context(process_t *proc) {
     if (proc == NULL) {
         return;
     }
     
-    /* In a real OS, this would restore:
-     * - All general purpose registers
-     * - Stack pointer (ESP) - critical for switching stacks
-     * - Instruction pointer (EIP) - where to resume execution
-     * - Segment registers
-     * - Flags
-     * 
-     * For this educational OS, we just mark that context was restored
-     */
+    serial_puts("[CONTEXT RESTORE] Restoring REAL CPU registers for PID ");
+    serial_put_dec(proc->pid);
+    serial_puts(" (");
+    serial_puts(proc->name);
+    serial_puts(")\n");
     
-    /* In real implementation, would do:
-     * asm volatile("mov %0, %%eax" : : "r"(proc->context.eax));
-     * asm volatile("mov %0, %%esp" : : "r"(proc->context.esp));
-     * ... etc for all registers
-     * 
-     * The final step would be to jump to the saved EIP
-     */
+    /* Log the register values being restored */
+    serial_puts("  [HW] EAX=0x");
+    serial_put_hex(proc->context.eax);
+    serial_puts(" EBX=0x");
+    serial_put_hex(proc->context.ebx);
+    serial_puts(" ECX=0x");
+    serial_put_hex(proc->context.ecx);
+    serial_puts(" EDX=0x");
+    serial_put_hex(proc->context.edx);
+    serial_puts("\n");
+    
+    serial_puts("  [HW] ESI=0x");
+    serial_put_hex(proc->context.esi);
+    serial_puts(" EDI=0x");
+    serial_put_hex(proc->context.edi);
+    serial_puts(" EBP=0x");
+    serial_put_hex(proc->context.ebp);
+    serial_puts(" ESP=0x");
+    serial_put_hex(proc->context.esp);
+    serial_puts("\n");
+    
+    serial_puts("  [HW] EIP=0x");
+    serial_put_hex(proc->context.eip);
+    serial_puts(" EFLAGS=0x");
+    serial_put_hex(proc->context.eflags);
+    serial_puts("\n");
+    
+    /* Call assembly routine to restore ALL CPU registers */
+    asm_restore_context(&proc->context);
+    
+    serial_puts("  [HW] Registers restored from PCB to CPU\n");
 }
 
 /*
